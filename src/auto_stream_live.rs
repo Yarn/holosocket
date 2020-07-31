@@ -39,6 +39,7 @@ struct Live {
 #[derive(Debug, Deserialize)]
 struct JetriLive {
     live: Vec<Live>,
+    upcoming: Vec<Live>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +48,37 @@ pub struct LiveEvent {
     pub json: String,
 }
 
-pub async fn auto_live_task(broadcast: BroadcastChannel<Arc<LiveEvent>>, active: &mut HashSet<isize>, mock: bool) -> anyhow::Result<()> {
+async fn check_list(
+    active: &HashSet<isize>,
+    current: &[Live],
+    broadcast: &BroadcastChannel<Arc<LiveEvent>>,
+    event_types: (&str, &str),
+) -> anyhow::Result<()> {
+    for live in current.iter() {
+        if !active.contains(&live.id) {
+            let json = serde_json::to_string(live)?;
+            
+            let event = LiveEvent {
+                event_type: event_types.0.into(),
+                json,
+            };
+            broadcast.send(&Arc::new(event)).await?;
+        }
+    }
+    for live_id in active.iter() {
+        if !current.iter().any(|x| x.id == *live_id) {
+            let event = LiveEvent {
+                event_type: event_types.1.into(),
+                json: live_id.to_string(),
+            };
+            broadcast.send(&Arc::new(event)).await?;
+        }
+    }
+    
+    Ok(())
+}
+
+pub async fn auto_live_task(broadcast: BroadcastChannel<Arc<LiveEvent>>, active: &mut HashSet<isize>, upcoming: &mut HashSet<isize>, mock: bool) -> anyhow::Result<()> {
     
     if mock {
         async_std::task::sleep(::std::time::Duration::new(5, 0)).await;
@@ -90,28 +121,21 @@ pub async fn auto_live_task(broadcast: BroadcastChannel<Arc<LiveEvent>>, active:
             })
             .context("parse json")?;
         
-        for live in data.live.iter() {
-            if !active.contains(&live.id) {
-                let json = serde_json::to_string(live)?;
-                
-                let event = LiveEvent {
-                    event_type: "live".into(),
-                    json,
-                };
-                broadcast.send(&Arc::new(event)).await?;
-            }
-        }
-        for live_id in active.iter() {
-            if !data.live.iter().any(|x| x.id == *live_id) {
-                let event = LiveEvent {
-                    event_type: "unlive".into(),
-                    json: live_id.to_string(),
-                };
-                broadcast.send(&Arc::new(event)).await?;
-            }
-        }
+        check_list(
+            &active,
+            &data.live,
+            &broadcast,
+            ("live", "unlive"),
+        ).await?;
+        check_list(
+            &upcoming,
+            &data.upcoming,
+            &broadcast,
+            ("upcoming_add", "upcoming_remove"),
+        ).await?;
         
         *active = data.live.iter().map(|x| x.id).collect();
+        *upcoming = data.upcoming.iter().map(|x| x.id).collect();
         
         async_std::task::sleep(::std::time::Duration::new(25, 0)).await;
     }

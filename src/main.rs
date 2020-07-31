@@ -24,12 +24,13 @@ async fn async_main() -> Result<()> {
     let task_broadcast = broadcast.clone();
     task::spawn(async {
         let mut active = HashSet::new();
+        let mut upcoming = HashSet::new();
         let mock = std::env::vars()
             .find(|(x, _)| x == "holosocket_mock")
             .map(|(_, x)| x != "")
             .unwrap_or(false);
         
-        match auto_stream_live::auto_live_task(task_broadcast, &mut active, mock).await {
+        match auto_stream_live::auto_live_task(task_broadcast, &mut active, &mut upcoming, mock).await {
             Ok(()) => {}
             Err(err) => { dbg!(err); },
         }
