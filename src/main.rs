@@ -68,7 +68,14 @@ async fn async_main() -> Result<()> {
         
         Ok(res)
     });
-    app.listen("0.0.0.0:8080").await?;
+    
+    let port: usize = std::env::vars()
+        .find(|(x, _)| x == "holosocket_port")
+        .map(|(_, x)| x)
+        .unwrap_or("8080".to_string())
+        .parse()?;
+    let bind_addr = format!("0.0.0.0:{}", port);
+    app.listen(bind_addr.as_str()).await?;
     
     dbg!();
     Ok(())
