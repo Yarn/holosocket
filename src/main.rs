@@ -5,23 +5,26 @@ use http_types::headers::HeaderValue;
 use tide::security::{CorsMiddleware, Origin};
 use async_std::task;
 use std::collections::HashSet;
-use broadcaster::BroadcastChannel;
 use futures::stream::StreamExt;
 use async_std::sync::Arc;
+use async_std::sync::RwLock;
+use async_std::sync::{ channel, Sender };
 
 mod auto_stream_live;
 use auto_stream_live::LiveEvent;
 
+type SseChannels = Arc<RwLock<Vec<Sender<Arc<LiveEvent>>>>>;
+
 #[derive(Clone)]
 struct State {
-    broadcast: BroadcastChannel<Arc<LiveEvent>>,
+    sse_channels: Arc<RwLock<Vec<Sender<Arc<LiveEvent>>>>>,
 }
 
 async fn async_main() -> Result<()> {
     
-    let broadcast: BroadcastChannel<Arc<LiveEvent>> = BroadcastChannel::new();
+    let sse_channels = Arc::new(RwLock::new(Vec::new()));
     
-    let task_broadcast = broadcast.clone();
+    let task_sse_channels = sse_channels.clone();
     task::spawn(async {
         let mut active = HashSet::new();
         let mut upcoming = HashSet::new();
@@ -30,9 +33,13 @@ async fn async_main() -> Result<()> {
             .map(|(_, x)| x != "")
             .unwrap_or(false);
         
-        match auto_stream_live::auto_live_task(task_broadcast, &mut active, &mut upcoming, mock).await {
-            Ok(()) => {}
-            Err(err) => { dbg!(err); },
+        let task_sse_channels = task_sse_channels;
+        loop {
+            match auto_stream_live::auto_live_task(task_sse_channels.clone(), &mut active, &mut upcoming, mock).await {
+                Ok(()) => {}
+                Err(err) => { dbg!(err); },
+            }
+            async_std::task::sleep(::std::time::Duration::new(25, 0)).await;
         }
     });
     
@@ -42,22 +49,27 @@ async fn async_main() -> Result<()> {
         .allow_credentials(false);
     
     let state = State {
-        broadcast,
+        sse_channels,
     };
     let mut app = tide::with_state(state);
     
     app.middleware(cors);
     
     app.at("/sse").get(|req| async move {
-        let mut res = tide_compressed_sse::upgrade(req, |req: Request<State>, sender| async move {
-            let mut broadcast = req.state().broadcast.clone();
+        let mut res = tide::sse::upgrade(req, |req: Request<State>, sender| async move {
+            let (send, mut recv) = channel(100);
+            {
+                let mut sse_channels = req.state().sse_channels.write().await;
+                sse_channels.push(send);
+            }
             
             loop {
-                let val = match broadcast.next().await {
+                let val = match recv.next().await {
                     Some(x) => x,
                     None => break,
                 };
-                log::trace!("{:?}", val);
+                
+                // log::trace!("{:?}", val);
                 
                 sender.send(&val.event_type, &val.json, None).await?;
             }

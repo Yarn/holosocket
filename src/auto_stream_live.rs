@@ -2,9 +2,8 @@
 use std::collections::HashSet;
 use serde::{ Serialize, Deserialize };
 use anyhow::Context as _;
-use broadcaster::BroadcastChannel;
 use async_std::sync::Arc;
-
+use crate::SseChannels;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LiveChannel {
@@ -48,10 +47,38 @@ pub struct LiveEvent {
     pub json: String,
 }
 
+async fn send_event(event: LiveEvent, sse_channels: &SseChannels) -> anyhow::Result<()> {
+    use async_std::sync::TrySendError;
+    let event = Arc::new(event);
+    let mut disconnected: Vec<usize> = Vec::new();
+    {
+        let channels = sse_channels.read().await;
+        for (i, chan) in channels.iter().enumerate() {
+            // chan.send(event.clone()).await;
+            
+            match chan.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {}
+                Err(TrySendError::Disconnected(_)) => {
+                    disconnected.push(i);
+                }
+            }
+        }
+    }
+    if !disconnected.is_empty() {
+        let mut channels = sse_channels.write().await;
+        for i in disconnected.into_iter().rev() {
+            channels.remove(i);
+        }
+    }
+    
+    Ok(())
+}
+
 async fn check_list(
     active: &HashSet<isize>,
     current: &[Live],
-    broadcast: &BroadcastChannel<Arc<LiveEvent>>,
+    sse_channels: &SseChannels,
     event_types: (&str, &str),
 ) -> anyhow::Result<()> {
     for live in current.iter() {
@@ -62,7 +89,7 @@ async fn check_list(
                 event_type: event_types.0.into(),
                 json,
             };
-            broadcast.send(&Arc::new(event)).await?;
+            send_event(event, sse_channels).await?;
         }
     }
     for live_id in active.iter() {
@@ -71,14 +98,14 @@ async fn check_list(
                 event_type: event_types.1.into(),
                 json: live_id.to_string(),
             };
-            broadcast.send(&Arc::new(event)).await?;
+            send_event(event, sse_channels).await?;
         }
     }
     
     Ok(())
 }
 
-pub async fn auto_live_task(broadcast: BroadcastChannel<Arc<LiveEvent>>, active: &mut HashSet<isize>, upcoming: &mut HashSet<isize>, mock: bool) -> anyhow::Result<()> {
+pub async fn auto_live_task(sse_channels: SseChannels, active: &mut HashSet<isize>, upcoming: &mut HashSet<isize>, mock: bool) -> anyhow::Result<()> {
     
     if mock {
         async_std::task::sleep(::std::time::Duration::new(5, 0)).await;
@@ -124,13 +151,13 @@ pub async fn auto_live_task(broadcast: BroadcastChannel<Arc<LiveEvent>>, active:
         check_list(
             &active,
             &data.live,
-            &broadcast,
+            &sse_channels,
             ("live", "unlive"),
         ).await?;
         check_list(
             &upcoming,
             &data.upcoming,
-            &broadcast,
+            &sse_channels,
             ("upcoming_add", "upcoming_remove"),
         ).await?;
         
