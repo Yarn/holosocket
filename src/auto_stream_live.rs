@@ -1,8 +1,10 @@
 
 use std::collections::HashSet;
+use std::time::Duration;
 use serde::{ Serialize, Deserialize };
 use anyhow::Context as _;
 use async_std::sync::Arc;
+use async_std::future::timeout;
 use crate::SseChannels;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,9 +120,15 @@ pub async fn auto_live_task(sse_channels: SseChannels, active: &mut HashSet<isiz
             let body = async_std::fs::read_to_string("./mock_data.json").await?;
             body
         } else {
-            let mut res = surf::get("https://api.holotools.app/v1/live").await
+            let mut res = timeout(
+                    Duration::from_secs(15),
+                    surf::get("https://api.holotools.app/v1/live")
+                ).await?
                 .map_err(|err| anyhow::anyhow!(err))?;
-            let body: String = res.body_string().await
+            let body: String = timeout(
+                    Duration::from_secs(15),
+                    res.body_string()
+                ).await?
                 .map_err(|err| anyhow::anyhow!(err))?;
             body
         };
