@@ -30,7 +30,7 @@ struct Live {
     live_schedule: Option<String>,
     live_start: Option<String>,
     live_end: Option<String>,
-    live_viewers: Option<String>,
+    live_viewers: Option<isize>,
     
     channel: LiveChannel,
 }
@@ -133,8 +133,18 @@ pub async fn auto_live_task(sse_channels: SseChannels, active: &mut HashSet<isiz
                 
                 if let Some(line) = body_str.lines().skip(err.line()-1).next() {
                     let col = err.column();
-                    let start = (col - 5).max(0);
+                    let start = ((col as isize) - 5).max(0) as usize;
                     let end = (col + 500).min(line.len());
+                    
+                    fn find_char_boundary(s: &str, i: usize) -> usize {
+                        let mut bound = i;
+                        while !s.is_char_boundary(bound) {
+                            bound -= 1;
+                        }
+                        bound
+                    }
+                    let start = find_char_boundary(line, start);
+                    let end = find_char_boundary(line, end);
                     
                     let sub_str = &line[start..end];
                     let arrow = "     ^";

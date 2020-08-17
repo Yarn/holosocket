@@ -55,6 +55,9 @@ async fn async_main() -> Result<()> {
     
     app.middleware(cors);
     
+    app.at("/check").get(|_req| async move {
+        Ok("OK")
+    });
     app.at("/sse").get(|req| async move {
         let mut res = tide::sse::upgrade(req, |req: Request<State>, sender| async move {
             let (send, mut recv) = channel(100);
