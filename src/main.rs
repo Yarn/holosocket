@@ -62,8 +62,9 @@ async fn async_main() -> Result<()> {
     app.at("/check").get(|_req| async move {
         Ok("OK")
     });
-    app.at("/sse").get(|req| async move {
-        let mut res = tide::sse::upgrade(req, |req: Request<State>, sender| async move {
+    app.at("/sse").get(|req: Request<State>| async move {
+        // let mut res = tide::sse::upgrade(req, |req: Request<State>, sender| async move {
+        let mut res = tide_compressed_sse::upgrade(req, |req: Request<State>, sender| async move {
             let (send, mut recv) = channel(100);
             {
                 let mut sse_channels = req.state().sse_channels.write().await;
