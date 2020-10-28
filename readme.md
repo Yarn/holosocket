@@ -56,3 +56,21 @@ Add a `Live` to `state.ended`.
 data type: `number`
 
 A `Live` removed from `state.ended`.
+
+# Examples
+
+```js
+var e = new EventSource("http://localhost:8080/");
+const handler = function(event) {
+  console.log(event);
+  const data = JSON.parse(event.data);
+  console.log(data);
+};
+e.addEventListener("initial", handler);
+e.addEventListener("live_add", handler);
+e.addEventListener("live_rem", handler);
+e.addEventListener("upcoming_add", handler);
+e.addEventListener("upcoming_rem", handler);
+e.addEventListener("ended_add", handler);
+e.addEventListener("ended_rem", handler);
+```
