@@ -4,38 +4,41 @@ use tide::Request;
 use http_types::headers::HeaderValue;
 use tide::security::{CorsMiddleware, Origin};
 use async_std::task;
-use std::collections::HashSet;
 use futures::stream::StreamExt;
 use async_std::sync::Arc;
 use async_std::sync::RwLock;
 use async_std::sync::{ channel, Sender };
 
 mod auto_stream_live;
-use auto_stream_live::LiveEvent;
+use auto_stream_live::{ LiveEvent, JetriLive, LiveTaskState };
 
 type SseChannels = Arc<RwLock<Vec<Sender<Arc<LiveEvent>>>>>;
+type Current = Arc<RwLock<JetriLive>>;
 
 #[derive(Clone)]
 struct State {
     sse_channels: Arc<RwLock<Vec<Sender<Arc<LiveEvent>>>>>,
+    current: Current,
 }
 
 async fn async_main() -> Result<()> {
     
     let sse_channels = Arc::new(RwLock::new(Vec::new()));
+    let current = Arc::new(RwLock::new(JetriLive::default()));
     
     let task_sse_channels = sse_channels.clone();
+    let task_current = current.clone();
     task::spawn(async {
-        let mut active = HashSet::new();
-        let mut upcoming = HashSet::new();
         let mock = std::env::vars()
             .find(|(x, _)| x == "holosocket_mock")
             .map(|(_, x)| x != "")
             .unwrap_or(false);
         
         let task_sse_channels = task_sse_channels;
+        let task_current = task_current;
+        let mut state = LiveTaskState::new(task_current.clone());
         loop {
-            match auto_stream_live::auto_live_task(task_sse_channels.clone(), &mut active, &mut upcoming, mock).await {
+            match auto_stream_live::auto_live_task(task_sse_channels.clone(), &mut state, mock).await {
                 Ok(()) => {}
                 Err(err) => { dbg!(err); },
             }
@@ -50,10 +53,11 @@ async fn async_main() -> Result<()> {
     
     let state = State {
         sse_channels,
+        current,
     };
     let mut app = tide::with_state(state);
     
-    app.middleware(cors);
+    app.with(cors);
     
     app.at("/check").get(|_req| async move {
         Ok("OK")
@@ -65,6 +69,11 @@ async fn async_main() -> Result<()> {
                 let mut sse_channels = req.state().sse_channels.write().await;
                 sse_channels.push(send);
             }
+            let json = {
+                let current = req.state().current.read().await;
+                serde_json::to_string(&*current)?
+            };
+            sender.send("initial", &json, None).await?;
             
             loop {
                 let val = match recv.next().await {

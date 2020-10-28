@@ -5,7 +5,7 @@ use serde::{ Serialize, Deserialize };
 use anyhow::Context as _;
 use async_std::sync::Arc;
 use async_std::future::timeout;
-use crate::SseChannels;
+use crate::{ SseChannels, Current };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LiveChannel {
@@ -13,7 +13,7 @@ struct LiveChannel {
     yt_channel_id: Option<String>,
     bb_space_id: Option<String>,
     name: String,
-    description: Option<String>,
+    // description: Option<String>,
     photo: Option<String>,
     published_at: String,
     twitter_link: Option<String>,
@@ -37,10 +37,11 @@ struct Live {
     channel: LiveChannel,
 }
 
-#[derive(Debug, Deserialize)]
-struct JetriLive {
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct JetriLive {
     live: Vec<Live>,
     upcoming: Vec<Live>,
+    ended: Vec<Live>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +108,30 @@ async fn check_list(
     Ok(())
 }
 
-pub async fn auto_live_task(sse_channels: SseChannels, active: &mut HashSet<isize>, upcoming: &mut HashSet<isize>, mock: bool) -> anyhow::Result<()> {
+pub struct LiveTaskState {
+    current: Current,
+    active: HashSet<isize>,
+    upcoming: HashSet<isize>,
+    ended: HashSet<isize>,
+}
+
+impl LiveTaskState {
+    pub fn new(current: Current) -> Self {
+        Self {
+            current,
+            active: HashSet::new(),
+            upcoming: HashSet::new(),
+            ended: HashSet::new(),
+        }
+    }
+}
+
+pub async fn auto_live_task(sse_channels: SseChannels, state: &mut LiveTaskState, mock: bool) -> anyhow::Result<()> {
+    
+    let ref mut current = state.current;
+    let ref mut active = state.active;
+    let ref mut upcoming = state.upcoming;
+    let ref mut ended = state.ended;
     
     if mock {
         async_std::task::sleep(::std::time::Duration::new(5, 0)).await;
@@ -122,7 +146,7 @@ pub async fn auto_live_task(sse_channels: SseChannels, active: &mut HashSet<isiz
         } else {
             let mut res = timeout(
                     Duration::from_secs(15),
-                    surf::get("https://api.holotools.app/v1/live")
+                    surf::get("https://api.holotools.app/v1/live?max_upcoming_hours=2190")
                 ).await?
                 .map_err(|err| anyhow::anyhow!(err))?;
             let body: String = timeout(
@@ -166,21 +190,36 @@ pub async fn auto_live_task(sse_channels: SseChannels, active: &mut HashSet<isiz
             })
             .context("parse json")?;
         
-        check_list(
-            &active,
-            &data.live,
-            &sse_channels,
-            ("live", "unlive"),
-        ).await?;
-        check_list(
-            &upcoming,
-            &data.upcoming,
-            &sse_channels,
-            ("upcoming_add", "upcoming_remove"),
-        ).await?;
-        
-        *active = data.live.iter().map(|x| x.id).collect();
-        *upcoming = data.upcoming.iter().map(|x| x.id).collect();
+        {
+            // hold a lock on current so a client can't recieve an initial state
+            // needing an update that was already sent
+            let mut current = current.write().await;
+            
+            check_list(
+                &active,
+                &data.live,
+                &sse_channels,
+                ("live_add", "live_rem"),
+            ).await?;
+            check_list(
+                &upcoming,
+                &data.upcoming,
+                &sse_channels,
+                ("upcoming_add", "upcoming_rem"),
+            ).await?;
+            check_list(
+                &ended,
+                &data.ended,
+                &sse_channels,
+                ("ended_add", "ended_rem"),
+            ).await?;
+            
+            *active = data.live.iter().map(|x| x.id).collect();
+            *upcoming = data.upcoming.iter().map(|x| x.id).collect();
+            *ended = data.ended.iter().map(|x| x.id).collect();
+            
+            *current = data;
+        }
         
         async_std::task::sleep(::std::time::Duration::new(25, 0)).await;
     }
